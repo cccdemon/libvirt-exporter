@@ -715,7 +715,7 @@ func CollectDomain(ch chan<- prometheus.Metric, stat libvirt.DomainStats) error 
 // CollectFromLibvirt obtains Prometheus metrics from all domains in a
 // libvirt setup.
 func CollectFromLibvirt(ch chan<- prometheus.Metric, uri string) error {
-	#conn, err := libvirt.NewConnectReadOnly(uri)
+	//conn, err := libvirt.NewConnectReadOnly(uri)
      conn, err := libvirt.Connect()
 	if err != nil {
 		return err
