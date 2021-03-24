@@ -27,6 +27,8 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"io/ioutil"
 )
 
 var (
@@ -244,7 +246,93 @@ var (
 		"The amount of memory in percent, that used by domain.",
 		[]string{"domain"},
 		nil)
+	libvirtDomainInfoCPUStealTimeDesc = prometheus.NewDesc(
+		prometheus.BuildFQName("libvirt", "domain_info", "cpu_steal_time_total"),
+		"Amount of CPU time stolen from the domain, in ns, that is, 1/1,000,000,000 of a second, or 10−9 seconds.",
+		[]string{"domain", "cpu"},
+		nil)
+
 )
+
+// QueryCPUsResult holds the structured representative of QMP's "query-cpus" output
+type QueryCPUsResult struct {
+	Return []QemuThread `json:"return"`
+}
+
+// QemuThread holds qemu thread info: which virtual cpu is it, what the thread PID is
+type QemuThread struct {
+	CPU      int
+	ThreadID int `json:"thread_id"`
+}
+
+// ReadStealTime reads the file /proc/<thread_id>/schedstat and returns
+// the second field as a float64 value
+func ReadStealTime(pid int) (float64, error) {
+	var retval float64
+	path := fmt.Sprintf("/proc/%d/schedstat", pid)
+	result, err := ioutil.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+
+	values := strings.Split(string(result), " ")
+	// We expect exactly 3 fields in the output, otherwise we return error
+	if len(values) != 3 {
+		return 0, fmt.Errorf("Unexpected amount of fields in %s. The file content is \"%s\"", path, result)
+	}
+
+	retval, err = strconv.ParseFloat(values[1], 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return retval, nil
+}
+// CollectDomainStealTime contacts the running QEMU instance via QemuMonitorCommand API call,
+// gets the PIDs of the running CPU threads.
+// It then calls ReadStealTime for every thread to obtain its steal times
+func CollectDomainStealTime(ch chan<- prometheus.Metric, domain *libvirt.Domain) error {
+	var totalStealTime float64
+	var domainName string
+
+	// Get the domain name
+	domainName, err := domain.GetName()
+	if err != nil {
+		return err
+	}
+
+	// query QEMU directly to ask PID numbers of its CPU threads
+	resultJSON, err := domain.QemuMonitorCommand("{\"execute\": \"query-cpus\"}", libvirt.DOMAIN_QEMU_MONITOR_COMMAND_DEFAULT)
+	if err != nil {
+		return err
+	}
+	// Allocate a map for the json parser results
+	qemuThreadsResult := QueryCPUsResult{Return: make([]QemuThread, 0, 8)}
+
+	// Parse the result into the map
+	err = json.Unmarshal([]byte(resultJSON), &qemuThreadsResult)
+	if err != nil {
+		return err
+	}
+
+	// Now iterate over qemuThreadsResult to get the list of QemuThread
+	for _, thread := range qemuThreadsResult.Return {
+		stealTime, err := ReadStealTime(thread.ThreadID)
+		if err != nil {
+			log.Printf("Error fetching steal time for the thread %d: %v. Skipping", thread.ThreadID, err)
+			continue
+		}
+		// Increment the total steal time
+		totalStealTime += stealTime
+
+		// Send the metric for this CPU
+		ch <- prometheus.MustNewConstMetric(libvirtDomainInfoCPUStealTimeDesc, prometheus.CounterValue, stealTime, domainName, fmt.Sprintf("%d", thread.CPU))
+	}
+	ch <- prometheus.MustNewConstMetric(libvirtDomainInfoCPUStealTimeDesc, prometheus.CounterValue, totalStealTime, domainName, "total")
+	return nil
+}
+
+
 
 // CollectDomain extracts Prometheus metrics from a libvirt domain.
 func CollectDomain(ch chan<- prometheus.Metric, stat libvirt.DomainStats) error {
@@ -648,7 +736,17 @@ func CollectFromLibvirt(ch chan<- prometheus.Metric, uri string) error {
 		err = CollectDomain(ch, stat)
 		if err != nil {
 			log.Printf("Failed to scrape metrics: %s", err)
+			stat.Domain.Free()
+			continue
 		}
+		err = CollectDomainStealTime(ch, stat.Domain)
+		if err != nil {
+			log.Printf("Failed to scrape metrics: %s", err)
+			stat.Domain.Free()
+			continue
+		}
+		stat.Domain.Free()
+
 	}
 	return nil
 }
@@ -742,6 +840,7 @@ func (e *LibvirtExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- libvirtDomainMemoryStatRssBytesDesc
 	ch <- libvirtDomainMemoryStatUsableBytesDesc
 	ch <- libvirtDomainMemoryStatDiskCachesBytesDesc
+	ch <- libvirtDomainInfoCPUStealTimeDesc
 }
 
 // Collect scrapes Prometheus metrics from libvirt.
