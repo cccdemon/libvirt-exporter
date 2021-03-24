@@ -849,7 +849,7 @@ func (e *LibvirtExporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect scrapes Prometheus metrics from libvirt.
 func (e *LibvirtExporter) Collect(ch chan<- prometheus.Metric) {
-	err := CollectFromLibvirt(ch)
+	err := CollectFromLibvirt(ch, e.uri)
 	if err == nil {
 		ch <- prometheus.MustNewConstMetric(
 			libvirtUpDesc,
