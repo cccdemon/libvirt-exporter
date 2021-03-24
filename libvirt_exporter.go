@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"os"
 	"fmt"
-	"json"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"io/ioutil"
