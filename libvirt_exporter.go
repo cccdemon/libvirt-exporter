@@ -875,7 +875,7 @@ func main() {
 	)
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	exporter, err := NewLibvirtExporter(*libvirtURI, *libvirtUsername, *libvirtPassword)
+	exporter, err := NewLibvirtExporter(*libvirtURI)
 	if err != nil {
 		panic(err)
 	}
